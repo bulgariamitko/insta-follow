@@ -3,7 +3,7 @@ let stopped = false;
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === 'start') {
-    startFollowing(msg.usernames, msg.startIndex, msg.minDelay, msg.maxDelay, msg.fileName);
+    startFollowing(msg.usernames, msg.startIndex, msg.minDelay, msg.maxDelay, msg.fileName, msg.skipExisting);
     sendResponse({ ok: true });
   } else if (msg.action === 'stop') {
     stopped = true;
@@ -74,12 +74,193 @@ async function waitForTabLoad(tabId) {
   });
 }
 
-// ---- Injected functions (run in MAIN world for proper CSS access) ----
+async function executeOnTab(tabId, func) {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    func,
+    world: 'MAIN',
+  });
+  return results[0]?.result;
+}
+
+// ---- Injected: get logged-in username ----
+
+function injectedGetMyUsername() {
+  // Instagram stores the logged-in user info in various places
+  // Method 1: meta tag
+  const metaEl = document.querySelector('meta[property="al:ios:url"]');
+  if (metaEl) {
+    const content = metaEl.getAttribute('content') || '';
+    const match = content.match(/user\?username=([^&]+)/);
+    if (match) return match[1];
+  }
+  // Method 2: link with href to own profile in the nav
+  const profileLinks = document.querySelectorAll('a[href*="/"][role="link"]');
+  for (const link of profileLinks) {
+    const img = link.querySelector('img[alt]');
+    if (img && link.href) {
+      const match = link.href.match(/instagram\.com\/([^/?]+)/);
+      if (match && match[1] !== 'explore' && match[1] !== 'reels' &&
+          match[1] !== 'direct' && match[1] !== 'p' && match[1] !== 'stories') {
+        return match[1];
+      }
+    }
+  }
+  // Method 3: check _sharedData
+  try {
+    if (window._sharedData?.config?.viewer?.username) {
+      return window._sharedData.config.viewer.username;
+    }
+  } catch (e) {}
+  return null;
+}
+
+// ---- Injected: click the Following count to open dialog ----
+
+function injectedClickFollowingLink() {
+  // Find all links in header section, the "following" link contains /following/
+  const links = document.querySelectorAll('a[href*="/following"]');
+  for (const link of links) {
+    if (link.href.includes('/following')) {
+      link.click();
+      return { clicked: true, href: link.href };
+    }
+  }
+  // Fallback: find by the section with following count (usually the 3rd <li> or <a> in header)
+  const header = document.querySelector('header');
+  if (header) {
+    const allLinks = header.querySelectorAll('a');
+    for (const link of allLinks) {
+      if (link.href && link.href.includes('/following')) {
+        link.click();
+        return { clicked: true, href: link.href };
+      }
+    }
+  }
+  return { clicked: false };
+}
+
+// ---- Injected: scroll the Following dialog and collect usernames ----
+
+function injectedCollectFollowing() {
+  const dialog = document.querySelector('[role="dialog"]');
+  if (!dialog) return { usernames: [], done: false, error: 'no dialog' };
+
+  const links = dialog.querySelectorAll('a[href*="/"]');
+  const usernames = new Set();
+  for (const link of links) {
+    const href = link.getAttribute('href');
+    if (href && href.match(/^\/[^/]+\/$/)) {
+      const username = href.replace(/\//g, '');
+      // Skip common non-user paths
+      if (!['explore', 'reels', 'direct', 'p', 'stories', 'accounts'].includes(username)) {
+        usernames.add(username);
+      }
+    }
+  }
+
+  // Scroll the dialog's scrollable container
+  const scrollable = dialog.querySelector('[style*="overflow"]') ||
+    dialog.querySelector('[class*="scroll"]') ||
+    dialog.querySelector('div > div > div');
+
+  // Find the scrollable element inside the dialog
+  let scrollEl = null;
+  const allDivs = dialog.querySelectorAll('div');
+  for (const div of allDivs) {
+    if (div.scrollHeight > div.clientHeight + 10 && div.clientHeight > 100) {
+      scrollEl = div;
+      break;
+    }
+  }
+
+  if (scrollEl) {
+    scrollEl.scrollTop = scrollEl.scrollHeight;
+  }
+
+  return { usernames: Array.from(usernames), scrolled: !!scrollEl };
+}
+
+// ---- Fetch all following usernames ----
+
+async function fetchFollowingList(tabId) {
+  // Step 1: Go to instagram.com to get logged-in username
+  await saveState({ statusText: 'Fetching your following list...' });
+
+  await chrome.tabs.update(tabId, { url: 'https://www.instagram.com/' });
+  await waitForTabLoad(tabId);
+  await safeSleep(3000);
+
+  const myUsername = await executeOnTab(tabId, injectedGetMyUsername);
+  if (!myUsername) {
+    await saveState({ statusText: 'Could not detect your username. Skipping pre-check.' });
+    return null;
+  }
+
+  await saveState({ statusText: `Found your account: @${myUsername}. Loading following list...` });
+
+  // Step 2: Navigate to own profile
+  await chrome.tabs.update(tabId, { url: `https://www.instagram.com/${myUsername}/` });
+  await waitForTabLoad(tabId);
+  await safeSleep(3000);
+
+  // Step 3: Click the "Following" link
+  const clickResult = await executeOnTab(tabId, injectedClickFollowingLink);
+  if (!clickResult?.clicked) {
+    await saveState({ statusText: 'Could not open Following dialog. Skipping pre-check.' });
+    return null;
+  }
+
+  await safeSleep(2000);
+
+  // Step 4: Scroll and collect all usernames
+  const allFollowing = new Set();
+  let prevCount = 0;
+  let staleRounds = 0;
+
+  for (let i = 0; i < 150; i++) { // max 150 scroll rounds (~3000+ users)
+    const result = await executeOnTab(tabId, injectedCollectFollowing);
+    if (result.error) {
+      await safeSleep(1500);
+      continue;
+    }
+
+    for (const u of result.usernames) {
+      allFollowing.add(u.toLowerCase());
+    }
+
+    const newCount = allFollowing.size;
+    await saveState({
+      statusText: `Loading following list... (${newCount} users found)`,
+    });
+
+    if (newCount === prevCount) {
+      staleRounds++;
+      if (staleRounds >= 5) break; // no new users after 5 scroll rounds = done
+    } else {
+      staleRounds = 0;
+    }
+    prevCount = newCount;
+
+    await safeSleep(800);
+  }
+
+  await saveState({
+    statusText: `Following list loaded: ${allFollowing.size} users. Starting follows...`,
+  });
+
+  return allFollowing;
+}
+
+// ---- Injected functions for follow detection ----
+
+// Helper to find Follow/Following button - inlined in each injected function
+// because executeScript runs each function in isolation.
+// The button has class _aswr (action button), NOT _aswq (link-style button).
 
 function injectedCheckPage() {
   const pageText = document.body?.innerText || '';
 
-  // Check for 404 page
   if (pageText.includes("Sorry, this page isn't available") ||
       document.querySelector('svg[aria-label="Broken link"]')) {
     return { status: 'page_not_found' };
@@ -88,46 +269,56 @@ function injectedCheckPage() {
   const header = document.querySelector('header');
   if (!header) return { status: 'loading', detail: 'no header' };
 
-  const headerBtn = header.querySelector('button');
-  if (!headerBtn) return { status: 'loading', detail: 'no button in header' };
+  // Find the follow action button (_aswr), not other header buttons
+  let headerBtn = header.querySelector('button._aswr');
+  if (!headerBtn) {
+    // Fallback: find by blue bg
+    const buttons = header.querySelectorAll('button');
+    for (const btn of buttons) {
+      const bg = window.getComputedStyle(btn).backgroundColor;
+      const m = bg.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+      if (m && parseInt(m[3]) > 200 && parseInt(m[1]) < 130) { headerBtn = btn; break; }
+    }
+  }
+  if (!headerBtn) headerBtn = header.querySelector('button._aswv');
+  if (!headerBtn) return { status: 'loading', detail: 'no follow button in header' };
 
-  // Check by CSS class - _aswu = Follow (blue), _aswv = Following (grey)
   const classes = headerBtn.className;
   const text = headerBtn.textContent.trim();
   const bgColor = window.getComputedStyle(headerBtn).backgroundColor;
 
-  if (classes.includes('_aswu')) {
-    return { status: 'ready', text, bgColor, classes };
-  }
-
   if (classes.includes('_aswv')) {
-    return { status: 'already_following', text, bgColor, classes };
+    return { status: 'already_following', text, bgColor };
   }
 
-  // Fallback: check background color
   const match = bgColor.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
   if (match) {
     const r = parseInt(match[1]);
-    const g = parseInt(match[2]);
     const b = parseInt(match[3]);
-    if (b > 200 && r < 130 && g < 130) {
-      return { status: 'ready', text, bgColor, classes };
+    if (b > 200 && r < 130) {
+      return { status: 'ready', text, bgColor };
     }
-    // Non-blue = already following or other state
-    return { status: 'already_following', text, bgColor, classes };
+    return { status: 'already_following', text, bgColor };
   }
 
-  return { status: 'loading', detail: 'unknown', text, bgColor, classes };
+  return { status: 'loading', detail: 'unknown', text, bgColor };
 }
 
 function injectedClickFollow() {
   const header = document.querySelector('header');
   if (!header) return { clicked: false, error: 'no header' };
 
-  const btn = header.querySelector('button');
-  if (!btn) return { clicked: false, error: 'no button' };
+  let btn = header.querySelector('button._aswr');
+  if (!btn) {
+    const buttons = header.querySelectorAll('button');
+    for (const b of buttons) {
+      const bg = window.getComputedStyle(b).backgroundColor;
+      const m = bg.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+      if (m && parseInt(m[3]) > 200 && parseInt(m[1]) < 130) { btn = b; break; }
+    }
+  }
+  if (!btn) return { clicked: false, error: 'no follow button' };
 
-  // Just click it - we already verified it's the Follow button in checkPage
   btn.click();
   return { clicked: true, text: btn.textContent.trim() };
 }
@@ -136,16 +327,13 @@ function injectedVerify() {
   const header = document.querySelector('header');
   if (!header) return { verified: false };
 
-  const btn = header.querySelector('button');
+  let btn = header.querySelector('button._aswr') || header.querySelector('button._aswv');
   if (!btn) return { verified: false };
 
-  const classes = btn.className;
-  // _aswv = Following state
-  if (classes.includes('_aswv')) {
+  if (btn.className.includes('_aswv')) {
     return { verified: true };
   }
 
-  // Fallback: check bg color changed from blue
   const bgColor = window.getComputedStyle(btn).backgroundColor;
   const match = bgColor.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
   if (match) {
@@ -160,15 +348,6 @@ function injectedVerify() {
 }
 
 // ---- Main logic ----
-
-async function executeOnTab(tabId, func) {
-  const results = await chrome.scripting.executeScript({
-    target: { tabId },
-    func,
-    world: 'MAIN',
-  });
-  return results[0]?.result;
-}
 
 async function tryFollowUser(tabId, username) {
   let lastCheck = null;
@@ -195,7 +374,6 @@ async function tryFollowUser(tabId, username) {
     return `not_found (${lastCheck?.detail || 'timeout'})`;
   }
 
-  // Click follow
   try {
     const clickResult = await executeOnTab(tabId, injectedClickFollow);
     if (!clickResult?.clicked) return `click_failed (${clickResult?.error || 'unknown'})`;
@@ -203,7 +381,6 @@ async function tryFollowUser(tabId, username) {
     return 'click_error: ' + err.message;
   }
 
-  // Wait and verify
   await safeSleep(2500);
   try {
     const v = await executeOnTab(tabId, injectedVerify);
@@ -213,7 +390,7 @@ async function tryFollowUser(tabId, username) {
   }
 }
 
-async function startFollowing(usernames, startIndex, minDelay, maxDelay, fileName) {
+async function startFollowing(usernames, startIndex, minDelay, maxDelay, fileName, skipExisting) {
   if (running) return;
   running = true;
   stopped = false;
@@ -241,6 +418,36 @@ async function startFollowing(usernames, startIndex, minDelay, maxDelay, fileNam
     await saveState({ status: 'stopped', statusText: 'No active tab found' });
     running = false;
     return;
+  }
+
+  // Pre-fetch following list if enabled
+  let followingSet = null;
+  if (skipExisting && startIndex === 0) {
+    try {
+      followingSet = await fetchFollowingList(tabId);
+      if (followingSet) {
+        // Filter out already-following users and log them as skipped
+        const filtered = [];
+        let skippedCount = 0;
+        for (let i = 0; i < usernames.length; i++) {
+          if (followingSet.has(usernames[i].toLowerCase())) {
+            await appendLog({ index: i + 1, username: usernames[i], result: 'skipped_already_following' });
+            skippedCount++;
+          } else {
+            filtered.push(usernames[i]);
+          }
+        }
+        await saveState({
+          statusText: `Skipped ${skippedCount} already-following. ${filtered.length} to follow.`,
+          skippedCount,
+        });
+        usernames = filtered;
+        await saveState({ usernames, total: usernames.length });
+        await safeSleep(2000);
+      }
+    } catch (err) {
+      await saveState({ statusText: 'Pre-check failed, continuing without it...' });
+    }
   }
 
   for (let i = startIndex; i < usernames.length; i++) {

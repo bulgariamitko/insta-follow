@@ -16,6 +16,7 @@ const progressEl = document.getElementById('progress');
 const progressBar = document.getElementById('progressBar');
 const minDelayInput = document.getElementById('minDelay');
 const maxDelayInput = document.getElementById('maxDelay');
+const skipExistingCb = document.getElementById('skipExisting');
 
 // Load state on popup open
 loadState();
@@ -104,6 +105,7 @@ function renderLog(logEntries) {
 function formatResult(result) {
   if (result === 'followed') return 'Followed';
   if (result === 'already_following') return 'Already following';
+  if (result === 'skipped_already_following') return 'Skipped (already following)';
   if (result === 'page_not_found') return 'Profile not found';
   if (result === 'clicked_unverified') return 'Clicked Follow (unverified)';
   if (result === 'click_failed') return 'Click failed';
@@ -123,6 +125,7 @@ function isFailed(result) {
 function getResultClass(result) {
   if (result === 'followed') return 'followed';
   if (result === 'already_following') return 'already_following';
+  if (result === 'skipped_already_following') return 'skipped';
   if (result === 'clicked_unverified') return 'clicked_but_unverified';
   return 'error';
 }
@@ -192,6 +195,7 @@ startBtn.addEventListener('click', () => {
     minDelay,
     maxDelay,
     fileName,
+    skipExisting: skipExistingCb.checked,
   });
 });
 

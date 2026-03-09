@@ -151,6 +151,23 @@
       color: #555;
       margin-top: 4px;
     }
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 14px;
+    }
+    .checkbox-row input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+    }
+    .checkbox-row label {
+      display: inline;
+      font-size: 13px;
+      font-weight: 400;
+      margin-bottom: 0;
+    }
+    .skipped { color: #8e8e8e; }
   </style>
 </head>
 <body>
@@ -172,6 +189,11 @@
       <input type="number" id="maxDelay" value="6" min="2">
       <span>seconds</span>
     </div>
+  </div>
+
+  <div class="checkbox-row">
+    <input type="checkbox" id="skipExisting" checked>
+    <label for="skipExisting">Pre-check: skip users I already follow</label>
   </div>
 
   <div class="btn-row">
