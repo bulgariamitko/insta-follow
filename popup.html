@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 400px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      padding: 16px;
+      color: #262626;
+      background: #fafafa;
+    }
+    h1 {
+      font-size: 18px;
+      margin-bottom: 12px;
+      text-align: center;
+    }
+    .section {
+      margin-bottom: 14px;
+    }
+    label {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    input[type="file"] {
+      font-size: 13px;
+      width: 100%;
+    }
+    .delay-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .delay-row input {
+      width: 60px;
+      padding: 4px 6px;
+      border: 1px solid #dbdbdb;
+      border-radius: 4px;
+      font-size: 13px;
+      text-align: center;
+    }
+    .delay-row span {
+      font-size: 13px;
+    }
+    .btn-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    button {
+      flex: 1;
+      padding: 10px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      color: #fff;
+      background: #0095f6;
+    }
+    button:hover { background: #1877f2; }
+    button:disabled {
+      background: #b2dffc;
+      cursor: not-allowed;
+    }
+    #stopBtn {
+      background: #ed4956;
+      display: none;
+    }
+    #stopBtn:hover { background: #d32f2f; }
+    #resumeBtn {
+      background: #00a86b;
+      display: none;
+    }
+    #resumeBtn:hover { background: #008c59; }
+    #clearBtn {
+      background: #8e8e8e;
+      display: none;
+      font-size: 12px;
+      padding: 6px;
+    }
+    #clearBtn:hover { background: #666; }
+    .bottom-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 6px;
+    }
+    .bottom-row button {
+      font-size: 12px;
+      padding: 6px;
+    }
+    #copyLogBtn {
+      background: #555;
+      display: none;
+    }
+    #copyLogBtn:hover { background: #333; }
+    #copyLogBtn.copied, #copyFailedBtn.copied {
+      background: #00a86b;
+    }
+    #copyFailedBtn {
+      background: #ed4956;
+      display: none;
+    }
+    #copyFailedBtn:hover { background: #d32f2f; }
+    #status {
+      font-size: 12px;
+      color: #8e8e8e;
+      min-height: 18px;
+      margin-top: 4px;
+    }
+    #lastFile {
+      font-size: 12px;
+      color: #8e8e8e;
+      margin-bottom: 8px;
+      display: none;
+    }
+    #progress {
+      height: 4px;
+      background: #dbdbdb;
+      border-radius: 2px;
+      margin-bottom: 8px;
+      display: none;
+    }
+    #progressBar {
+      height: 100%;
+      background: #0095f6;
+      border-radius: 2px;
+      transition: width 0.3s;
+    }
+    #log {
+      max-height: 220px;
+      overflow-y: auto;
+      font-size: 12px;
+      border: 1px solid #dbdbdb;
+      border-radius: 4px;
+      padding: 6px;
+      background: #fff;
+      display: none;
+    }
+    #log div { padding: 2px 0; border-bottom: 1px solid #f0f0f0; }
+    #log div:last-child { border-bottom: none; }
+    .followed { color: #00a86b; }
+    .already_following { color: #f59e0b; }
+    .page_not_found, .not_found, .error { color: #ed4956; }
+    .clicked_but_unverified { color: #0095f6; }
+    #preview {
+      font-size: 12px;
+      color: #555;
+      margin-top: 4px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Insta Follow</h1>
+
+  <div id="lastFile"></div>
+
+  <div class="section">
+    <label>Upload JSON file</label>
+    <input type="file" id="fileInput" accept=".json">
+    <div id="preview"></div>
+  </div>
+
+  <div class="section">
+    <label>Random delay between follows (seconds)</label>
+    <div class="delay-row">
+      <input type="number" id="minDelay" value="3" min="1">
+      <span>to</span>
+      <input type="number" id="maxDelay" value="6" min="2">
+      <span>seconds</span>
+    </div>
+  </div>
+
+  <div class="btn-row">
+    <button id="startBtn" disabled>Start Following</button>
+    <button id="resumeBtn">Resume</button>
+    <button id="stopBtn">Stop</button>
+  </div>
+  <div class="bottom-row">
+    <button id="clearBtn">Clear History</button>
+    <button id="copyLogBtn">Copy Log</button>
+    <button id="copyFailedBtn">Copy Failed</button>
+  </div>
+
+  <div id="progress"><div id="progressBar" style="width:0%"></div></div>
+  <div id="status"></div>
+  <div id="log"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
